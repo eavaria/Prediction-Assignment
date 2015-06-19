@@ -1,0 +1,125 @@
+---
+title: "Practical Machine Learning - Prediction Assignment Writeup"
+author: "Eduardo Avaria"
+date: "Thursday, June 19, 2015"
+output: 
+  html_document:
+    fig_height: 9
+    fig_width: 9
+---
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har. 
+
+
+## Libraries Required 
+```{r, cache = T}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+```
+### Downloading the Data
+The following code takes care of checking if the data is local, and if not, downloading it.
+```{r, cache = T}
+trainUrl <-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainFile <- "./data/pml-training.csv"
+testFile  <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(trainFile)) {
+  download.file(trainUrl, destfile=trainFile, method="curl")
+}
+if (!file.exists(testFile)) {
+  download.file(testUrl, destfile=testFile, method="curl")
+}
+```  
+### Read the Data
+At this point, we know that the data is available, so we load it into memory
+```{r, cache = T}
+importedTrain <- read.csv("./data/pml-training.csv")
+importedTest <- read.csv("./data/pml-testing.csv")
+dim(importedTrain)
+dim(importedTest)
+```
+The data consists in a training set, consisting of 19622 observations and a testing set with 20 observations that need to be classified into one of the 5 available type of record, as described by the 'classe' in the training set. Both datasets contain 160 columns originally, but we will manually explore them, and use our understanding of the situation to remove the columns that don't seem usefull for determining to which classe the record belongs.
+
+
+### Clean the data
+
+The first cleaning performed is removing the columns that don't have any data
+```{r, cache = T}
+noNaTrain <- importedTrain[, colSums(is.na(importedTrain)) == 0] 
+importedTest <- importedTest[, colSums(is.na(importedTest)) == 0] 
+```  
+Next, after a manual inspection of the data, we remove the timestamp data, since that information is not useful for identifying the classe of the record.
+```{r, cache = T}
+classe <- noNaTrain$classe
+trainRemove <- grepl("^X|timestamp|window", names(noNaTrain))
+filteredTrain <- noNaTrain[, !trainRemove]
+cleanTrain <- filteredTrain[, sapply(filteredTrain, is.numeric)]
+cleanTrain$classe <- classe
+testRemove <- grepl("^X|timestamp|window", names(importedTest))
+filteredTest <- importedTest[, !testRemove]
+cleanTest <- filteredTest[, sapply(filteredTest, is.numeric)]
+sum(complete.cases(cleanTrain))
+setdiff(names(filteredTest),names(filteredTrain))
+```
+At this point, we still have 19622 observations to make our random forest, with 53 columns available as predictors, where all of them have data. We also made us sure that both datasets have the same columns kept to get the same model (since "problem_id" is the only different column).
+
+
+### Slice the data
+Now that we believe that our data is clean enough for modeling, we will split the training data into training and validation chunks. For this, we will use a 60-40 approach, using a random (manually set) seed.
+```{r, cache = T}
+set.seed(8358) # Generated at random.org
+inTrain <- createDataPartition(cleanTrain$classe, p=0.60, list=F)
+trainData <- cleanTrain[inTrain, ]
+valData <- cleanTrain[-inTrain, ]
+```
+
+## Data Modeling
+At this point, we will construct a random forest model using the column classe as label and the 52 columns left as predictors. To account for the randomization of the forest we will bootstrap the dataset on 25 iterations, and will use 260 (predictors*5)trees.
+```{r, cache = T}
+controlRf <- trainControl(method="boot", 25)
+RF <- train(classe ~ ., data=trainData, method="rf", trControl=controlRf, ntree=260)
+RF
+```
+At this point, we will use the validation data to check the behaviour of our model, making sure that it's general enough to accept unlabeled data.  
+```{r, cache = T}
+predictRF <- predict(RF, valData)
+confusionMatrix(valData$classe, predictRF)
+```
+```{r, cache = T}
+postResample(predictRF, valData$classe)
+1 - as.numeric(confusionMatrix(valData$classe, predictRF)$overall[1])
+```
+We can see that with the selected parameters, the model has a 98.9% of accuracy, and we can expect about 1 of 100 of samples missclasified. Since we need it to classify 20, it's acceptable, allowing us to process the testing dataset.
+
+
+## Predicting for Test Data Set
+Now, we apply the model to the original testing data set downloaded from the data source. We remove the `problem_id` column first. 
+We will process the (after cleaning ) testing dataset using the random forest constructed. For this, we will remove the extra column of this dataset (problem_id) and use the function predict() with.
+```{r, cache = T}
+prediction <- predict(RF, cleanTest[, -length(names(cleanTest))])
+prediction
+```  
+
+## Appendix: Figures
+1. Correlation Matrix Visualization  
+```{r, cache = T}
+corrPlot <- cor(trainData[, -length(names(trainData))])
+corrplot(corrPlot, method="color")
+```
+
+
+2. Graphic representation of the Decision Tree
+```{r, cache = T}
+treeModel <- rpart(classe ~ ., data=trainData, method="class")
+prp(treeModel)
+```
